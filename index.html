@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -512,25 +513,23 @@ label.lbl{display:block;font-size:13px;font-weight:700;color:#374151;margin-bott
 <script>
 // ── IndexedDB ──────────────────────────────────────────────
 let db;
-
-// ── API Layer (بدل IndexedDB — يخزن في MySQL على الكمبيوتر) ──
-const API = 'api/';
-
-async function apiGet(file, params={}){
-  try{
-    const qs=Object.keys(params).length?'?'+new URLSearchParams(params):'';
-    const r=await fetch(API+file+qs);
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    return await r.json();
-  }catch(e){showToast('خطأ في الاتصال: '+e.message,'err');return{ok:false,error:e.message};}
+const DB_NAME='SalahCashDB', DB_VER=1;
+function initDB(){
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open(DB_NAME,DB_VER);
+    r.onupgradeneeded=e=>{
+      const d=e.target.result;
+      if(!d.objectStoreNames.contains('days')) d.createObjectStore('days',{keyPath:'date'});
+      if(!d.objectStoreNames.contains('settings')) d.createObjectStore('settings',{keyPath:'id'});
+    };
+    r.onsuccess=e=>{db=e.target.result;res();};
+    r.onerror=()=>rej(r.error);
+  });
 }
-async function apiPost(file,data={}){
-  try{
-    const r=await fetch(API+file,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    return await r.json();
-  }catch(e){showToast('خطأ في الحفظ: '+e.message,'err');return{ok:false,error:e.message};}
-}
+const dbGet=(s,k)=>new Promise((res,rej)=>{const r=db.transaction(s,'readonly').objectStore(s).get(k);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});
+const dbPut=(s,v)=>new Promise((res,rej)=>{const r=db.transaction(s,'readwrite').objectStore(s).put(v);r.onsuccess=()=>res();r.onerror=()=>rej(r.error);});
+const dbGetAll=(s)=>new Promise((res,rej)=>{const r=db.transaction(s,'readonly').objectStore(s).getAll();r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});
+const dbClear=(s)=>new Promise((res,rej)=>{const r=db.transaction(s,'readwrite').objectStore(s).clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error);});
 
 // ── State ──────────────────────────────────────────────────
 let currentDate=todayStr();
@@ -581,7 +580,10 @@ function toWestern(s){
     .replace(/[۰۱۲۳۴۵۶۷۸۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d).toString());
 }
 
-// ── تطبيق التحويل على كل حقول الأرقام تلقائياً ───────────
+// قراءة حقل رقمي مع التحويل
+function readNum(id){ return parseFloat(toWestern(document.getElementById(id)?.value||'0'))||0; }
+
+// تطبيق التحويل تلقائياً عند الكتابة
 document.addEventListener('input',function(e){
   const el=e.target;
   if(el.tagName!=='INPUT') return;
@@ -595,23 +597,21 @@ document.addEventListener('input',function(e){
   }
 });
 
-// ── التنقل بـ Enter بين الحقول ───────────────────────────
+// التنقل بـ Enter بين الحقول
 document.addEventListener('keydown',function(e){
   if(e.key!=='Enter') return;
   const el=e.target;
   if(el.tagName!=='INPUT') return;
   e.preventDefault();
-  // ابحث عن الحاوي الأقرب (لوحة أو الصفحة كلها)
   const container=el.closest('.panel,.ob-screen,.main-wrap')||document.body;
   const inputs=[...container.querySelectorAll(
     'input:not([disabled]):not([type="file"]):not([type="hidden"])'
-  )].filter(i=>i.offsetParent!==null); // مرئية فقط
+  )].filter(i=>i.offsetParent!==null);
   const idx=inputs.indexOf(el);
   if(idx>=0&&idx<inputs.length-1){
     inputs[idx+1].focus();
     inputs[idx+1].select&&inputs[idx+1].select();
   } else {
-    // آخر حقل → اضغط زر الحفظ/التأكيد
     const btn=container.querySelector(
       '.save-btn:not([disabled]),.ob-btn,.settle-save-btn,[onclick*="saveAdd"],[onclick*="confirmOB"]'
     );
@@ -619,17 +619,11 @@ document.addEventListener('keydown',function(e){
   }
 });
 
-// قراءة حقل رقمي مع تحويل الأرقام العربية تلقائياً
-function readNum(id){ return parseFloat(toWestern(document.getElementById(id)?.value||'0'))||0; }
-
+// ── Init ───────────────────────────────────────────────────
 async function init(){
-  // تحميل الإعدادات من MySQL
-  const sr=await apiGet('settings.php');
-  if(sr.ok&&sr.settings){
-    settings.companyName = sr.settings.company_name  || 'شركة الإطارات';
-    settings.setupDone   = sr.settings.setup_done   === '1';
-    settings.startDate   = sr.settings.start_date   || null;
-  }
+  await initDB();
+  const s=await dbGet('settings','main');
+  if(s) settings=s;
   document.getElementById('coNameDisplay').textContent=settings.companyName;
 
   currentDate=todayStr();
@@ -654,14 +648,14 @@ async function init(){
     return;
   }
 
-  // Get first date from settings or earliest day in DB
+  // Get first date from settings.startDate or earliest day in DB
   if(settings.startDate) firstDate=settings.startDate;
   else await refreshFirstDate();
 
-  const er=await apiGet('get_day.php',{date:currentDate});
-  if(er.found){
+  const existing=await dbGet('days',currentDate);
+  if(existing){
     showMain();
-    currentDay=er.day;
+    currentDay=existing;
     renderDay();
   } else {
     await showOB(currentDate);
@@ -669,8 +663,7 @@ async function init(){
 }
 
 async function refreshFirstDate(){
-  const r=await apiGet('get_all_days.php');
-  const all=r.ok&&r.days?r.days:[];
+  const all=await dbGetAll('days');
   const sorted=all.map(d=>d.date).sort();
   firstDate=sorted[0]||null;
 }
@@ -686,7 +679,7 @@ async function confirmSetup(){
   settings.companyName=name;
   settings.setupDone=true;
   settings.startDate=chosenDate;
-  await apiPost('settings.php',{company_name:name,setup_done:'1',start_date:chosenDate});
+  await dbPut('settings',settings);
   document.getElementById('coNameDisplay').textContent=name;
   document.getElementById('setupScreen').style.display='none';
   currentDate=chosenDate;
@@ -697,14 +690,13 @@ async function confirmSetup(){
 // ── OB Screen ─────────────────────────────────────────────
 async function showOB(date){
   document.getElementById('obDateLabel').textContent=fmtDateAr(date);
-  const r=await apiGet('get_all_days.php');
-  const all=r.ok&&r.days?r.days:[];
+  // Calculate suggested OB from previous day
+  const all=await dbGetAll('days');
   const prev=all.map(d=>d.date).sort().filter(d=>d<date).pop();
   let suggested=0;
   let sourceText='لا يوجد رصيد سابق — ابدأ من الصفر';
   if(prev){
-    const pr=await apiGet('get_day.php',{date:prev});
-    const pd=pr.found?pr.day:null;
+    const pd=await dbGet('days',prev);
     suggested=calcNetWithSettlement(pd);
     const surplus=Number(pd.surplus||0);
     const deficit=Number(pd.deficit||0);
@@ -745,16 +737,15 @@ async function confirmOB(){
   await startDay(currentDate,v);
 }
 async function skipOB(){
-  const r=await apiGet('get_all_days.php');
-  const all=r.ok&&r.days?r.days:[];
+  const all=await dbGetAll('days');
   const prev=all.map(d=>d.date).sort().filter(d=>d<currentDate).pop();
   let ob=0;
-  if(prev){const pr=await apiGet('get_day.php',{date:prev});if(pr.found)ob=calcNetWithSettlement(pr.day);}
+  if(prev){const pd=await dbGet('days',prev);ob=calcNetWithSettlement(pd);}
   await startDay(currentDate,ob);
 }
 async function startDay(date,ob){
-  currentDay={date,openingBalance:ob,transactions:[],surplus:0,deficit:0};
-  await apiPost('save_day.php',currentDay);
+  currentDay={date,openingBalance:ob,transactions:[]};
+  await dbPut('days',currentDay);
   await refreshFirstDate();
   showMain();
   renderDay();
@@ -837,50 +828,37 @@ async function goToday(){
 
 async function loadDay(){
   updateDateDisplay();
+  // أغلق نموذج التسوية عند تغيير اليوم
   const form=document.getElementById('settleForm');
   if(form) form.style.display='none';
   settleType=null;
-  const r=await apiGet('get_day.php',{date:currentDate});
-  if(r.found){
-    currentDay=r.day;
-    renderDay();
-    updateCumulatives();
-    return;
+  let d=await dbGet('days',currentDate);
+  if(!d){
+    const all=await dbGetAll('days');
+    const prev=all.map(x=>x.date).sort().filter(x=>x<currentDate).pop();
+    let ob=0;
+    if(prev){const pd=await dbGet('days',prev);ob=calcNetWithSettlement(pd);}
+    d={date:currentDate,openingBalance:ob,transactions:[]};
+    await dbPut('days',d);
   }
-  // يوم جديد — احسب الرصيد الافتتاحي من اليوم السابق
-  const allR=await apiGet('get_all_days.php');
-  const all=allR.ok&&allR.days?allR.days:[];
-  const prev=all.map(d=>d.date).sort().filter(d=>d<currentDate).pop();
-  let ob=0;
-  if(prev){const pr=await apiGet('get_day.php',{date:prev});if(pr.found)ob=calcNetWithSettlement(pr.day);}
-  currentDay={date:currentDate,openingBalance:ob,transactions:[],surplus:0,deficit:0};
-  await apiPost('save_day.php',currentDay);
+  currentDay=d;
   renderDay();
   updateCumulatives();
 }
 
 async function saveDay(){
-  await apiPost('save_day.php',currentDay);
+  await dbPut('days',currentDay);
   await cascade(currentDate);
   renderDay();
 }
 
-// cascade: يُعيد حساب الرصيد الافتتاحي للأيام التالية بعد أي تعديل
+// cascade: recalculate openingBalance for all days AFTER fromDate
 async function cascade(fromDate){
-  const r=await apiGet('get_all_days.php');
-  const all=(r.ok&&r.days?r.days:[]).sort((a,b)=>a.date.localeCompare(b.date));
+  const all=(await dbGetAll('days')).sort((a,b)=>a.date.localeCompare(b.date));
   const idx=all.findIndex(d=>d.date===fromDate);
   for(let i=idx+1;i<all.length;i++){
     const net=calcNetWithSettlement(all[i-1]);
-    if(Math.abs(all[i].openingBalance-net)>0.001){
-      // جلب اليوم كاملاً بحركاته ثم تحديث الرصيد الافتتاحي
-      const dr=await apiGet('get_day.php',{date:all[i].date});
-      if(dr.found){
-        dr.day.openingBalance=net;
-        await apiPost('save_day.php',dr.day);
-        all[i].openingBalance=net;
-      }
-    }
+    if(all[i].openingBalance!==net){all[i].openingBalance=net;await dbPut('days',all[i]);}
   }
 }
 
@@ -1135,14 +1113,13 @@ function closeConfirm(){document.getElementById('confirmOverlay').style.display=
 
 // ── History ────────────────────────────────────────────────
 async function renderHistory(){
-  const r=await apiGet('get_all_days.php');
-  const all=(r.ok&&r.days?r.days:[]).sort((a,b)=>b.date.localeCompare(a.date));
+  const all=(await dbGetAll('days')).sort((a,b)=>b.date.localeCompare(a.date));
   const filter=document.getElementById('histMonth')?.value||'';
   const list=filter?all.filter(d=>d.date.startsWith(filter)):all;
   document.getElementById('histList').innerHTML=list.length?list.map(d=>{
     const net=calcNet(d);
     return `<div class="hist-row">
-      <div><div class="hist-date">${fmtDateAr(d.date)}</div><div class="hist-count">${(d.txCount||0)} حركة</div></div>
+      <div><div class="hist-date">${fmtDateAr(d.date)}</div><div class="hist-count">${(d.transactions||[]).length} حركة</div></div>
       <div style="text-align:center"><div class="hist-open">افتتاحي: ${fmt(d.openingBalance)}</div><div class="hist-net" style="color:${net>=0?'#7c3aed':'#dc2626'}">${fmt(net)} ر.س</div></div>
       <div class="hist-btns">
         <button class="sm-btn-g" onclick="exportExcelDate('${d.date}')">📊</button>
@@ -1153,8 +1130,8 @@ async function renderHistory(){
 }
 async function gotoDate(date){
   currentDate=date;
-  const r=await apiGet('get_day.php',{date});
-  currentDay=r.found?r.day:null;
+  currentDay=await dbGet('days',date);
+  // أغلق نموذج التسوية وصفّر النوع عند تغيير اليوم
   const form=document.getElementById('settleForm');
   if(form) form.style.display='none';
   settleType=null;
@@ -1163,17 +1140,11 @@ async function gotoDate(date){
   updateCumulatives();
 }
 
-// ── Ledger ─────────────────────────────────────────────────
+// ── Ledger (all days cascading view) ──────────────────────
 async function renderLedger(){
-  const r=await apiGet('get_all_days.php');
-  const all=(r.ok&&r.days?r.days:[]).sort((a,b)=>a.date.localeCompare(b.date));
+  const all=(await dbGetAll('days')).sort((a,b)=>a.date.localeCompare(b.date));
   if(!all.length){document.getElementById('ledgerList').innerHTML='<div class="empty">لا توجد سجلات</div>';return;}
-  // جلب كل يوم مع حركاته
-  const fullDays=await Promise.all(all.map(async d=>{
-    const dr=await apiGet('get_day.php',{date:d.date});
-    return dr.found?dr.day:{...d,transactions:[]};
-  }));
-  document.getElementById('ledgerList').innerHTML=fullDays.map((d,idx)=>{
+  document.getElementById('ledgerList').innerHTML=all.map((d,idx)=>{
     const net=calcNet(d);
     const txs=d.transactions||[];
     return `<div class="ledger-row" id="lr${idx}">
@@ -1200,8 +1171,13 @@ async function renderLedger(){
         <div style="display:flex;gap:6px;padding:8px 0;flex-wrap:wrap">
           <button class="sm-btn" style="flex:1" onclick="gotoDateFromLedger('${d.date}')">✏️ تعديل</button>
           <button class="sm-btn-g" onclick="exportExcelDate('${d.date}')">📊 اكسل</button>
-          <button class="sm-btn" style="background:#ede9fe;color:#7c3aed" onclick="exportPdfDay('${d.date}')">🖨️ PDF</button>
+          <button class="sm-btn" style="background:#ede9fe;color:#7c3aed" onclick="exportPdfDay('${d.date}')">🖨️ PDF اليوم</button>
         </div>
+        ${txs.map(tx=>`
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-top:1px dashed #f1f5f9">
+            <span style="font-size:11px;color:var(--muted)">${tx.icon} ${tx.label} — ${tx.type==='in'?'+':'-'}${fmt(tx.amount)} ر.س</span>
+            <button class="sm-btn" style="font-size:10px;padding:4px 8px;background:#fef9c3;color:#854d0e" onclick="exportPdfTx('${d.date}','${tx.id}')">PDF حركة</button>
+          </div>`).join('')}
       </div>
     </div>`;
   }).join('');
@@ -1214,8 +1190,7 @@ function toggleLedger(idx){
 
 async function gotoDateFromLedger(date){
   currentDate=date;
-  const r=await apiGet('get_day.php',{date});
-  currentDay=r.found?r.day:null;
+  currentDay=await dbGet('days',date);
   const form=document.getElementById('settleForm');
   if(form) form.style.display='none';
   settleType=null;
@@ -1243,7 +1218,7 @@ async function saveCompanyName(){
   const v=document.getElementById('sCompany').value.trim();
   if(!v){showToast('يرجى إدخال اسم الشركة','err');return;}
   settings.companyName=v;
-  await apiPost('settings.php',{company_name:settings.companyName,setup_done:'1',start_date:settings.startDate||''});
+  await dbPut('settings',settings);
   document.getElementById('coNameDisplay').textContent=v;
   showToast('✅ تم حفظ اسم الشركة');
 }
@@ -1282,8 +1257,7 @@ function shareWhatsApp(){
 // ── Export ─────────────────────────────────────────────────
 async function exportExcel(){await exportExcelDate(currentDate);}
 async function exportExcelDate(date){
-  const r=await apiGet('get_day.php',{date});
-  const day=r.found?r.day:{date,openingBalance:0,transactions:[]};
+  const day=await dbGet('days',date)||{date,openingBalance:0,transactions:[]};
   const txs=day.transactions||[];
   const rows=[
     [`نظام إدارة الصندوق - ${settings.companyName}`],[`التاريخ`,date],[`الرصيد الافتتاحي`,day.openingBalance],[],
@@ -1299,11 +1273,10 @@ async function exportExcelDate(date){
 
 // ── PDF Export ────────────────────────────────────────────
 async function exportPdfDay(date){
-  const r=await apiGet('get_day.php',{date});
-  const day=r.found?r.day:{date,openingBalance:0,transactions:[]};
+  const day=await dbGet('days',date)||{date,openingBalance:0,transactions:[]};
   const txs=day.transactions||[];
   const win=window.open('','_blank','width=800,height=900');
-  if(!win){showToast('السماح بالنوافذ المنبثقة','err');return;}
+  if(!win){showToast('السماح بالنوافذ المنبثقة للتصدير','err');return;}
   const rows=txs.map((t,i)=>`
     <tr style="border-bottom:1px solid #eee">
       <td style="padding:8px 10px;text-align:center">${i+1}</td>
@@ -1313,27 +1286,81 @@ async function exportPdfDay(date){
       <td style="padding:8px 10px">${t.client||t.name||''}</td>
       <td style="padding:8px 10px">${t.details||''}</td>
       <td style="padding:8px 10px">${t.txDate||''}</td>
+      <td style="padding:8px 10px">${t.image?`<img src="${t.image}" style="width:60px;height:60px;object-fit:cover;border-radius:6px">`:''}</td>
     </tr>`).join('');
-  win.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>صندوق ${date}</title>
-    <style>body{font-family:Arial,sans-serif;direction:rtl;padding:24px;color:#1e293b}h2{color:#1a3c6e}table{width:100%;border-collapse:collapse;font-size:13px}th{background:#1a3c6e;color:#fff;padding:10px;text-align:right}tr:nth-child(even){background:#f8fafc}.summary{display:flex;gap:16px;margin-top:20px;flex-wrap:wrap}.scard{background:#f8fafc;border-radius:10px;padding:12px 20px;border-right:4px solid}.slabel{font-size:11px;color:#64748b}.sval{font-weight:800;font-size:1.1rem}@media print{button{display:none}}</style></head><body>
-    <h2>${settings.companyName}</h2><p style="color:#64748b;font-size:13px">كشف يومي — ${date} | افتتاحي: ${fmt(day.openingBalance)} ر.س</p>
-    <table><thead><tr><th>#</th><th>الفئة</th><th>النوع</th><th>المبلغ</th><th>العميل</th><th>التفاصيل</th><th>التاريخ</th></tr></thead><tbody>${rows}</tbody></table>
+  win.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8">
+    <title>صندوق ${date}</title>
+    <style>
+      body{font-family:Arial,sans-serif;direction:rtl;padding:24px;color:#1e293b}
+      h2{color:#1a3c6e;margin-bottom:4px} .sub{color:#64748b;font-size:13px;margin-bottom:20px}
+      table{width:100%;border-collapse:collapse;font-size:13px}
+      th{background:#1a3c6e;color:#fff;padding:10px;text-align:right}
+      tr:nth-child(even){background:#f8fafc}
+      .summary{display:flex;gap:16px;margin-top:20px;flex-wrap:wrap}
+      .scard{background:#f8fafc;border-radius:10px;padding:12px 20px;border-right:4px solid}
+      .slabel{font-size:11px;color:#64748b} .sval{font-weight:800;font-size:1.1rem;margin-top:4px}
+      @media print{button{display:none}}
+    </style></head><body>
+    <h2>${settings.companyName}</h2>
+    <div class="sub">كشف يومي — ${date} | الرصيد الافتتاحي: ${fmt(day.openingBalance)} ر.س</div>
+    <table><thead><tr>
+      <th>#</th><th>الفئة</th><th>النوع</th><th>المبلغ</th><th>العميل</th><th>التفاصيل</th><th>التاريخ</th><th>صورة</th>
+    </tr></thead><tbody>${rows}</tbody></table>
     <div class="summary">
-      <div class="scard" style="border-color:#10b981"><div class="slabel">الدخل</div><div class="sval" style="color:#10b981">${fmt(calcIn(day))} ر.س</div></div>
-      <div class="scard" style="border-color:#ef4444"><div class="slabel">الخرج</div><div class="sval" style="color:#ef4444">${fmt(calcOut(day))} ر.س</div></div>
-      <div class="scard" style="border-color:#7c3aed"><div class="slabel">الدفتري</div><div class="sval" style="color:#7c3aed">${fmt(calcNet(day))} ر.س</div></div>
-      <div class="scard" style="border-color:#059669;background:#f0fdf4"><div class="slabel">الفعلي</div><div class="sval" style="color:#059669">${fmt(calcNetWithSettlement(day))} ر.س</div></div>
+      <div class="scard" style="border-color:#10b981"><div class="slabel">إجمالي الدخل</div><div class="sval" style="color:#10b981">${fmt(calcIn(day))} ر.س</div></div>
+      <div class="scard" style="border-color:#ef4444"><div class="slabel">إجمالي الخرج</div><div class="sval" style="color:#ef4444">${fmt(calcOut(day))} ر.س</div></div>
+      <div class="scard" style="border-color:#7c3aed"><div class="slabel">الرصيد الدفتري</div><div class="sval" style="color:#7c3aed">${fmt(calcNet(day))} ر.س</div></div>
+      ${Number(day.surplus||0)>0?`<div class="scard" style="border-color:#f59e0b"><div class="slabel">فائض</div><div class="sval" style="color:#d97706">+${fmt(day.surplus)} ر.س</div></div>`:''}
+      ${Number(day.deficit||0)>0?`<div class="scard" style="border-color:#dc2626"><div class="slabel">عجز</div><div class="sval" style="color:#dc2626">-${fmt(day.deficit)} ر.س</div></div>`:''}
+      <div class="scard" style="border-color:#059669;background:#f0fdf4"><div class="slabel">الرصيد الفعلي</div><div class="sval" style="color:#059669">${fmt(calcNetWithSettlement(day))} ر.س</div></div>
     </div>
-    <br><button onclick="window.print()" style="background:#1a3c6e;color:#fff;border:none;border-radius:8px;padding:10px 24px;cursor:pointer;font-size:15px;margin-top:10px">🖨️ طباعة / PDF</button>
+    <br><button onclick="window.print()" style="background:#1a3c6e;color:#fff;border:none;border-radius:8px;padding:10px 24px;cursor:pointer;font-size:15px;margin-top:10px">🖨️ طباعة / حفظ PDF</button>
     </body></html>`);
-  win.document.close();showToast('📄 تم فتح PDF');
+  win.document.close();
+  showToast('📄 تم فتح PDF');
+}
+
+async function exportPdfTx(date, txId){
+  const day=await dbGet('days',date)||{date,openingBalance:0,transactions:[]};
+  const tx=(day.transactions||[]).find(t=>t.id===txId);
+  if(!tx){showToast('الحركة غير موجودة','err');return;}
+  const win=window.open('','_blank','width=600,height=700');
+  if(!win){showToast('السماح بالنوافذ المنبثقة للتصدير','err');return;}
+  win.document.write(`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8">
+    <title>${tx.label} — ${date}</title>
+    <style>
+      body{font-family:Arial,sans-serif;direction:rtl;padding:30px;color:#1e293b;max-width:500px;margin:0 auto}
+      h2{color:#1a3c6e} .badge{display:inline-block;padding:4px 14px;border-radius:20px;font-weight:800;font-size:13px;margin-bottom:20px}
+      .row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f1f5f9;font-size:14px}
+      .lbl{color:#64748b} .val{font-weight:700}
+      .amount{font-size:1.5rem;font-weight:900;text-align:center;margin:20px 0;padding:16px;border-radius:12px}
+      img{width:100%;max-height:250px;object-fit:cover;border-radius:12px;margin-top:16px}
+      @media print{button{display:none}}
+    </style></head><body>
+    <h2>${settings.companyName}</h2>
+    <p style="color:#64748b;font-size:13px">سند حركة مالية — ${date}</p>
+    <span class="badge" style="background:${tx.type==='in'?'#d1fae5':'#fee2e2'};color:${tx.type==='in'?'#065f46':'#991b1b'}">${tx.icon} ${tx.label} — ${tx.type==='in'?'دخل':'خرج'}</span>
+    <div class="amount" style="background:${tx.type==='in'?'#d1fae5':'#fee2e2'};color:${tx.type==='in'?'#059669':'#dc2626'}">
+      ${tx.type==='in'?'+':'-'}${fmt(tx.amount)} ر.س
+    </div>
+    ${tx.client||tx.name?`<div class="row"><span class="lbl">العميل / الاسم</span><span class="val">${tx.client||tx.name}</span></div>`:''}
+    ${tx.details?`<div class="row"><span class="lbl">التفاصيل</span><span class="val">${tx.details}</span></div>`:''}
+    ${tx.txDate?`<div class="row"><span class="lbl">التاريخ المرجعي</span><span class="val">${tx.txDate}</span></div>`:''}
+    <div class="row"><span class="lbl">تاريخ التسجيل</span><span class="val">${date}</span></div>
+    ${tx.image?`<img src="${tx.image}" alt="صورة الحركة">`:''}
+    <br><button onclick="window.print()" style="width:100%;background:#1a3c6e;color:#fff;border:none;border-radius:8px;padding:12px;cursor:pointer;font-size:15px;margin-top:16px">🖨️ طباعة / حفظ PDF</button>
+    </body></html>`);
+  win.document.close();
+  showToast('📄 تم فتح سند الحركة');
 }
 
 // ── Backup ─────────────────────────────────────────────────
-function backupData(){
-  // يُنزّل النسخة مباشرة من PHP
-  window.open('api/backup.php','_blank');
-  showToast('✅ جارٍ تنزيل النسخة الاحتياطية');
+async function backupData(){
+  const days=await dbGetAll('days');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify({days,settings,backupDate:new Date().toISOString()},null,2)],{type:'application/json'}));
+  a.download=`backup_صندوق_${todayStr()}.json`;a.click();
+  showToast('✅ تم حفظ النسخة الاحتياطية');
 }
 async function restoreData(e){
   const file=e.target.files[0];if(!file)return;
@@ -1342,18 +1369,15 @@ async function restoreData(e){
     try{
       const data=JSON.parse(ev.target.result);
       if(!data.days){showToast('ملف غير صحيح','err');return;}
-      const r=await apiPost('restore.php',data);
-      if(!r.ok){showToast('فشل الاستعادة: '+r.error,'err');return;}
-      if(data.settings){
-        settings.companyName=data.settings.company_name||data.settings.companyName||settings.companyName;
-        document.getElementById('coNameDisplay').textContent=settings.companyName;
-      }
+      await dbClear('days');
+      for(const d of data.days) await dbPut('days',d);
+      if(data.settings){settings=data.settings;await dbPut('settings',settings);}
+      document.getElementById('coNameDisplay').textContent=settings.companyName;
       await refreshFirstDate();
-      const dr=await apiGet('get_day.php',{date:currentDate});
-      currentDay=dr.found?dr.day:null;
+      currentDay=await dbGet('days',currentDate);
       if(currentDay)renderDay();
       closePanel();showToast('✅ تمت الاستعادة');
-    }catch(err){showToast('خطأ في القراءة: '+err.message,'err');}
+    }catch{showToast('خطأ في القراءة','err');}
   };
   reader.readAsText(file);
 }
@@ -1366,11 +1390,12 @@ async function clearAllData(){
     showToast('يرجى كتابة 123 للتأكيد','err');
     return;
   }
-  const r=await apiPost('clear_all.php',{confirm:'123'});
-  if(!r.ok){showToast('فشل الحذف','err');return;}
-  settings={companyName:'شركة الإطارات'};
+  await dbClear('days');
+  await dbClear('settings');
+  settings={id:'main',companyName:'شركة الإطارات'};
   firstDate=null;
   currentDay=null;
+  firstDate=null;
   closePanel();
   // Reset clearCode field
   document.getElementById('clearCode').value='';
@@ -1396,25 +1421,28 @@ function showToast(msg,type='ok'){
 
 // ── Cumulative Totals ─────────────────────────────────────
 async function updateCumulatives(){
-  const r=await apiGet('get_all_days.php');
-  const all=r.ok&&r.days?r.days:[];
-  let totalSurplus=0,totalDeficit=0,surplusDays=0,deficitDays=0;
+  const all=await dbGetAll('days');
+  let totalSurplus=0, totalDeficit=0, surplusDays=0, deficitDays=0;
   all.forEach(d=>{
-    const s=Number(d.surplus||0),df=Number(d.deficit||0);
+    const s=Number(d.surplus||0), df=Number(d.deficit||0);
     if(s>0){totalSurplus+=s;surplusDays++;}
     if(df>0){totalDeficit+=df;deficitDays++;}
   });
   const row=document.getElementById('cumulRow');
-  if(totalSurplus===0&&totalDeficit===0){if(row)row.style.display='none';return;}
-  if(row)row.style.display='grid';
+  // أظهر الكروت التراكمية فقط عند وجود بيانات فعلية
+  if(totalSurplus===0&&totalDeficit===0){
+    if(row) row.style.display='none';
+    return;
+  }
+  if(row) row.style.display='grid';
   document.getElementById('cTotalSurplus').textContent=fmt(totalSurplus)+' ر.س';
   document.getElementById('cTotalDeficit').textContent=fmt(totalDeficit)+' ر.س';
   document.getElementById('cSurplusDays').textContent=surplusDays>0?surplusDays+' يوم — اضغط للتفاصيل':'لا توجد فوائض';
   document.getElementById('cDeficitDays').textContent=deficitDays>0?deficitDays+' يوم — اضغط للتفاصيل':'لا توجد عجوزات';
-  const sc=document.getElementById('cTotalSurplus').closest('.cumul-card');
-  const dc=document.getElementById('cTotalDeficit').closest('.cumul-card');
-  if(sc)sc.style.opacity=totalSurplus===0?'0.5':'1';
-  if(dc)dc.style.opacity=totalDeficit===0?'0.5':'1';
+  const surplusCard=document.getElementById('cTotalSurplus').closest('.cumul-card');
+  const deficitCard=document.getElementById('cTotalDeficit').closest('.cumul-card');
+  if(surplusCard) surplusCard.style.opacity=totalSurplus===0?'0.5':'1';
+  if(deficitCard) deficitCard.style.opacity=totalDeficit===0?'0.5':'1';
 }
 
 // ── Settlement ────────────────────────────────────────────
@@ -1500,8 +1528,7 @@ function clearSearch(){
 
 // ── Diff Log ──────────────────────────────────────────────
 async function renderDiffLog(){
-  const r=await apiGet('get_all_days.php');
-  const all=(r.ok&&r.days?r.days:[]).sort((a,b)=>b.date.localeCompare(a.date));
+  const all=(await dbGetAll('days')).sort((a,b)=>b.date.localeCompare(a.date));
   const diffs=all.filter(d=>Number(d.surplus||0)>0||Number(d.deficit||0)>0);
   const el=document.getElementById('difflogList');
   if(!diffs.length){el.innerHTML='<div class="empty">✅ لا توجد فروقات مسجلة</div>';return;}
@@ -1665,9 +1692,7 @@ async function saveEdit(){
 
 // ── Storage Monitor ───────────────────────────────────────
 async function getStorageInfo(){
-  const r=await apiGet('get_all_days.php');
-  const all=r.ok&&r.days?r.days:[];
-  return {days:all.length,note:'البيانات محفوظة في MySQL على الكمبيوتر'};
+  const all=await dbGetAll('days');
   let totalSize=0, imgCount=0;
   all.forEach(d=>{
     (d.transactions||[]).forEach(tx=>{
@@ -1720,9 +1745,36 @@ function getInstallDate(){
   if(!d){d=Date.now().toString();localStorage.setItem('dtInstallDate',d);}
   return parseInt(d);
 }
-// تاريخ التثبيت ومعرف الجهاز — localStorage فقط (خاصة بالجهاز)
-async function getInstallDateSafe(){ return getInstallDate(); }
-async function getDeviceIdSafe(){ return getDeviceId(); }
+// حفظ تاريخ التثبيت في IndexedDB كطبقة حماية إضافية ضد مسح localStorage
+async function getInstallDateSafe(){
+  try{
+    const rec=await dbGet('settings','installDate');
+    if(rec&&rec.value){
+      const lsDate=parseInt(localStorage.getItem('dtInstallDate')||'0');
+      const idbDate=rec.value;
+      const earliest=lsDate>0?Math.min(lsDate,idbDate):idbDate;
+      localStorage.setItem('dtInstallDate',earliest.toString());
+      return earliest;
+    }
+    const d=getInstallDate();
+    await dbPut('settings',{id:'installDate',value:d});
+    return d;
+  }catch{return getInstallDate();}
+}
+// حفظ deviceId في IndexedDB — يُستعاد إذا مُسح localStorage
+async function getDeviceIdSafe(){
+  try{
+    let id=localStorage.getItem('dtDeviceId');
+    const rec=await dbGet('settings','deviceId');
+    if(rec&&rec.value){
+      if(!id){localStorage.setItem('dtDeviceId',rec.value);id=rec.value;}
+      return id;
+    }
+    id=getDeviceId();
+    await dbPut('settings',{id:'deviceId',value:id});
+    return id;
+  }catch{return getDeviceId();}
+}
 async function getLicenseStatus(){
   const installDate=await getInstallDateSafe();
   const now=Date.now();
