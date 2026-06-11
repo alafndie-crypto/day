@@ -1231,20 +1231,55 @@ function shareWhatsApp(){
   const actualNet=calcNetWithSettlement(d);
   const surplus=Number(d.surplus||0);
   const deficit=Number(d.deficit||0);
-  const txLines=(d.transactions||[]).map(t=>`  ${t.icon} ${t.label}${t.client||t.name?' ('+( t.client||t.name)+')':''}: ${t.type==='in'?'+':'-'}${fmt(t.amount)} ر.س`).join('\n');
-  let text=`📊 *كشف صندوق يومي*\n`;
-  text+=`🏢 ${settings.companyName}\n`;
-  text+=`📅 ${fmtDateAr(currentDate)}\n`;
-  text+=`━━━━━━━━━━━━━━━\n`;
-  text+=`💰 الرصيد الافتتاحي: *${fmt(d.openingBalance)} ر.س*\n`;
-  text+=`✅ إجمالي الدخل: *${fmt(calcIn(d))} ر.س*\n`;
-  text+=`❌ إجمالي الخرج: *${fmt(calcOut(d))} ر.س*\n`;
-  text+=`━━━━━━━━━━━━━━━\n`;
-  if(txLines) text+=`\n*تفاصيل الحركات:*\n${txLines}\n\n`;
-  text+=`📒 الرصيد الدفتري: *${fmt(net)} ر.س*\n`;
-  if(surplus>0) text+=`🟡 فائض: +${fmt(surplus)} ر.س\n`;
-  if(deficit>0) text+=`🔴 عجز: -${fmt(deficit)} ر.س\n`;
-  text+=`✅ الرصيد الفعلي: *${fmt(actualNet)} ر.س*`;
+  const inTxs=(d.transactions||[]).filter(t=>t.type==='in');
+  const outTxs=(d.transactions||[]).filter(t=>t.type==='out');
+
+  const inLines=inTxs.map(t=>{
+    let line=`   ${t.icon} ${t.label}`;
+    if(t.client||t.name) line+=` ‹${t.client||t.name}›`;
+    if(t.details) line+=` — ${t.details}`;
+    line+=`\n      ＋ *${fmt(t.amount)} ر.س*`;
+    return line;
+  }).join('\n');
+
+  const outLines=outTxs.map(t=>{
+    let line=`   ${t.icon} ${t.label}`;
+    if(t.client||t.name) line+=` ‹${t.client||t.name}›`;
+    if(t.details) line+=` — ${t.details}`;
+    line+=`\n      ﹣ *${fmt(t.amount)} ر.س*`;
+    return line;
+  }).join('\n');
+
+  let text='';
+  text+=`╔══════════════════╗\n`;
+  text+=`      📊 *كشف صندوق يومي*\n`;
+  text+=`╚══════════════════╝\n\n`;
+  text+=`🏢 *${settings.companyName}*\n`;
+  text+=`📅 ${fmtDateAr(currentDate)}\n\n`;
+
+  text+=`━━━━━ 💼 ملخص اليوم ━━━━━\n`;
+  text+=`🔵 الرصيد الافتتاحي:  *${fmt(d.openingBalance)} ر.س*\n`;
+  text+=`🟢 إجمالي الدخل:      *${fmt(calcIn(d))} ر.س*\n`;
+  text+=`🔴 إجمالي الخرج:      *${fmt(calcOut(d))} ر.س*\n`;
+
+  if(inTxs.length){
+    text+=`\n━━━━━ 🟢 الدخل (${inTxs.length}) ━━━━━\n`;
+    text+=inLines+'\n';
+  }
+
+  if(outTxs.length){
+    text+=`\n━━━━━ 🔴 الخرج (${outTxs.length}) ━━━━━\n`;
+    text+=outLines+'\n';
+  }
+
+  text+=`\n━━━━━ 📒 الأرصدة ━━━━━\n`;
+  text+=`📒 الرصيد الدفتري:  *${fmt(net)} ر.س*\n`;
+  if(surplus>0) text+=`🟡 فائض مسجّل:      *+${fmt(surplus)} ر.س*\n`;
+  if(deficit>0) text+=`🔴 عجز مسجّل:       *−${fmt(deficit)} ر.س*\n`;
+  text+=`✅ الرصيد الفعلي:   *${fmt(actualNet)} ر.س*\n`;
+
+  text+=`\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔`;
+
   const encoded=encodeURIComponent(text);
   // intent:// يفتح واتساب مباشرة في APK WebView — wa.me للمتصفح
   const isAndroid=/android/i.test(navigator.userAgent);
@@ -1357,10 +1392,13 @@ async function exportPdfTx(date, txId){
 // ── Backup ─────────────────────────────────────────────────
 async function backupData(){
   const days=await dbGetAll('days');
+  if(!days||days.length===0){showToast('لا توجد بيانات للتصدير','err');return;}
+  const payload=JSON.stringify({days,settings,backupDate:new Date().toISOString()},null,2);
   const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([JSON.stringify({days,settings,backupDate:new Date().toISOString()},null,2)],{type:'application/json'}));
-  a.download=`backup_صندوق_${todayStr()}.json`;a.click();
-  showToast('✅ تم حفظ النسخة الاحتياطية');
+  a.href=URL.createObjectURL(new Blob([payload],{type:'application/json'}));
+  a.download=`backup_صندوق_${todayStr()}.json`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  showToast('✅ تم حفظ النسخة — '+days.length+' يوم');
 }
 async function restoreData(e){
   const file=e.target.files[0];if(!file)return;
@@ -1368,16 +1406,27 @@ async function restoreData(e){
   reader.onload=async ev=>{
     try{
       const data=JSON.parse(ev.target.result);
-      if(!data.days){showToast('ملف غير صحيح','err');return;}
+      if(!data.days||!Array.isArray(data.days)){showToast('ملف غير صحيح أو تالف','err');return;}
       await dbClear('days');
       for(const d of data.days) await dbPut('days',d);
       if(data.settings){settings=data.settings;await dbPut('settings',settings);}
-      document.getElementById('coNameDisplay').textContent=settings.companyName;
-      await refreshFirstDate();
+      document.getElementById('coNameDisplay').textContent=settings.companyName||'';
+      // تحديث firstDate من الإعدادات أو من أقدم يوم
+      if(settings.startDate) firstDate=settings.startDate;
+      else await refreshFirstDate();
+      // اذهب لأحدث يوم مسجّل في النسخة
+      const allDates=data.days.map(d=>d.date).sort();
+      const latestDate=allDates[allDates.length-1]||todayStr();
+      currentDate=latestDate;
       currentDay=await dbGet('days',currentDate);
-      if(currentDay)renderDay();
-      closePanel();showToast('✅ تمت الاستعادة');
-    }catch{showToast('خطأ في القراءة','err');}
+      closePanel();
+      renderDay();
+      updateCumulatives();
+      showToast('✅ تمت الاستعادة — '+data.days.length+' يوم');
+    }catch(err){
+      console.error(err);
+      showToast('خطأ في قراءة الملف — تأكد أنه ملف JSON صحيح','err');
+    }
   };
   reader.readAsText(file);
 }
