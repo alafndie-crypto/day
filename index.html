@@ -345,6 +345,7 @@ label.lbl{display:block;font-size:13px;font-weight:700;color:#374151;margin-bott
       <button class="exp-btn" onclick="exportExcel()" style="flex:1;font-size:11px;padding:9px 4px">📊<br>اكسل</button>
       <button class="exp-btn" style="flex:1;font-size:11px;padding:9px 4px;background:linear-gradient(135deg,#7c3aed,#a855f7)" onclick="exportPdfDay(currentDate)">🖨️<br>طباعة</button>
       <button class="exp-btn" style="flex:1;font-size:11px;padding:9px 4px;background:linear-gradient(135deg,#059669,#10b981)" onclick="shareWhatsApp()">📱<br>واتساب</button>
+      <button class="exp-btn" style="flex:1;font-size:11px;padding:9px 4px;background:linear-gradient(135deg,#c2410c,#f97316)" onclick="sharePdfWhatsApp()">📄<br>PDF واتس</button>
     </div>
   </div>
 
@@ -471,16 +472,16 @@ label.lbl{display:block;font-size:13px;font-weight:700;color:#374151;margin-bott
   <div class="panel-body">
     <div class="backup-grid">
       <div class="backup-card">
-        <div class="backup-icon">⬇️</div>
+        <div class="backup-icon">💾</div>
         <div class="backup-title">تصدير نسخة</div>
-        <div class="backup-sub">حفظ البيانات ملف JSON</div>
-        <button class="backup-btn" onclick="backupData()">تنزيل</button>
+        <div class="backup-sub">حفظ البيانات كملف JSON على جهازك</div>
+        <button class="backup-btn" onclick="backupData()">⬇️ تصدير وحفظ</button>
       </div>
       <div class="backup-card">
-        <div class="backup-icon">⬆️</div>
+        <div class="backup-icon">📂</div>
         <div class="backup-title">استعادة نسخة</div>
-        <div class="backup-sub">تحميل ملف JSON</div>
-        <label class="backup-btn file-label">اختر ملف<input type="file" accept=".json" style="display:none" onchange="restoreData(event)"></label>
+        <div class="backup-sub">استيراد ملف JSON محفوظ مسبقاً</div>
+        <label class="backup-btn file-label" style="background:linear-gradient(135deg,#047857,#10b981)">⬆️ اختر ملف للاستعادة<input type="file" accept=".json" style="display:none" onchange="restoreData(event)"></label>
       </div>
     </div>
     <div style="margin-top:12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px;font-size:12px;color:#166534;line-height:1.7">
@@ -1224,6 +1225,129 @@ async function saveCompanyName(){
 }
 
 // ── WhatsApp Share ─────────────────────────────────────────
+async function sharePdfWhatsApp(){
+  if(!currentDay){showToast('لا توجد بيانات لهذا اليوم','err');return;}
+  const d=currentDay;
+  const date=currentDate;
+  const txs=d.transactions||[];
+  const inTxs=txs.filter(t=>t.type==='in');
+  const outTxs=txs.filter(t=>t.type==='out');
+  const net=calcNet(d);
+  const actualNet=calcNetWithSettlement(d);
+  const surplus=Number(d.surplus||0);
+  const deficit=Number(d.deficit||0);
+  const dateLabel=fmtDateAr(date);
+  const coName=settings.companyName;
+
+  // اسم الملف: تاريخ ميلادي فقط بدون عربي
+  const fileName='cashbox-'+date+'.html';
+
+  function timeLabel(tx){
+    const ts=parseInt((tx.id||'').split('.')[0]);
+    if(!ts||isNaN(ts)) return '-';
+    const dt=new Date(ts);
+    if(isNaN(dt.getTime())) return '-';
+    return dt.toLocaleTimeString('ar-SA',{hour:'2-digit',minute:'2-digit',hour12:true});
+  }
+
+  function makeRows(list,color,sign){
+    if(!list.length) return '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:14px">لا توجد حركات</td></tr>';
+    return list.map((t,i)=>{
+      const name=t.label+(t.client||t.name?' ('+( t.client||t.name)+')':'');
+      const details=t.details||'-';
+      const time=timeLabel(t);
+      const bg=i%2===0?'#fff':'#f8fafc';
+      const imgCell=t.image
+        ?`<img src="${t.image}" style="width:54px;height:54px;object-fit:cover;border-radius:6px;display:block">`
+        :`<span style="color:#cbd5e1;font-size:11px">-</span>`;
+      return `<tr style="background:${bg}">
+        <td style="padding:7px 9px;font-weight:700;font-size:12px">${name}</td>
+        <td style="padding:7px 9px;color:#64748b;font-size:11px">${details}</td>
+        <td style="padding:7px 9px;font-weight:900;color:${color};text-align:center;font-size:12px;white-space:nowrap">${sign}${fmt(t.amount)} ر.س</td>
+        <td style="padding:7px 9px;color:#64748b;font-size:11px;text-align:center;white-space:nowrap">${time}</td>
+        <td style="padding:5px 7px;text-align:center">${imgCell}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  const inRows=makeRows(inTxs,'#059669','+');
+  const outRows=makeRows(outTxs,'#dc2626','-');
+
+  const htmlContent=`<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:Arial,Tahoma,sans-serif;direction:rtl;background:#fff;color:#1e293b;padding:14px;font-size:13px}
+    .hdr{background:linear-gradient(135deg,#0f2647,#2563eb);color:#fff;padding:14px 18px;border-radius:10px 10px 0 0}
+    .hdr h1{font-size:1rem;font-weight:900;margin-bottom:2px}
+    .hdr .sub{font-size:11px;opacity:.8}
+    .summary{display:flex;border:1px solid #e2e8f0;border-top:none}
+    .sc{flex:1;padding:9px 12px;border-left:1px solid #e2e8f0}
+    .sc:last-child{border-left:none}
+    .sl{font-size:10px;color:#64748b;font-weight:600;margin-bottom:2px}
+    .sv{font-size:.9rem;font-weight:900}
+    .sec{background:#f8fafc;padding:7px 12px;font-weight:800;font-size:12px;border-top:2px solid;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center}
+    table{width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-top:none}
+    th{padding:7px 9px;font-size:10px;font-weight:800;color:#64748b;background:#f1f5f9;text-align:right;border-bottom:1px solid #e2e8f0}
+    td{border-bottom:1px solid #f1f5f9;vertical-align:middle}
+    .foot{display:flex;border:1px solid #e2e8f0;border-top:2px solid #e2e8f0;margin-top:10px;border-radius:0 0 10px 10px;overflow:hidden}
+    .fc{flex:1;padding:9px 12px;border-left:1px solid #e2e8f0;background:#f8fafc}
+    .fc:last-child{border-left:none}
+    .fl{font-size:10px;color:#64748b;font-weight:600;margin-bottom:2px}
+    .fv{font-size:.95rem;font-weight:900}
+    @media print{body{padding:0}}
+  </style></head><body>
+  <div class="hdr">
+    <h1>${coName}</h1>
+    <div class="sub">كشف الصندوق اليومي | ${dateLabel}</div>
+  </div>
+  <div class="summary">
+    <div class="sc"><div class="sl">الرصيد الافتتاحي</div><div class="sv" style="color:#1d4ed8">${fmt(d.openingBalance)} ر.س</div></div>
+    <div class="sc"><div class="sl">اجمالي الدخل</div><div class="sv" style="color:#059669">+${fmt(calcIn(d))} ر.س</div></div>
+    <div class="sc"><div class="sl">اجمالي الخرج</div><div class="sv" style="color:#dc2626">-${fmt(calcOut(d))} ر.س</div></div>
+  </div>
+  <div class="sec" style="border-color:#10b981;color:#065f46;margin-top:10px">
+    <span>الدخل</span>
+    <span style="background:#d1fae5;color:#065f46;border-radius:20px;padding:2px 10px;font-size:11px">${inTxs.length} حركة | +${fmt(calcIn(d))} ر.س</span>
+  </div>
+  <table>
+    <thead><tr><th>البيان</th><th>التفاصيل</th><th style="text-align:center">المبلغ</th><th style="text-align:center">الوقت</th><th style="text-align:center">صورة</th></tr></thead>
+    <tbody>${inRows}</tbody>
+  </table>
+  <div class="sec" style="border-color:#ef4444;color:#991b1b;margin-top:10px">
+    <span>الخرج</span>
+    <span style="background:#fee2e2;color:#991b1b;border-radius:20px;padding:2px 10px;font-size:11px">${outTxs.length} حركة | -${fmt(calcOut(d))} ر.س</span>
+  </div>
+  <table>
+    <thead><tr><th>البيان</th><th>التفاصيل</th><th style="text-align:center">المبلغ</th><th style="text-align:center">الوقت</th><th style="text-align:center">صورة</th></tr></thead>
+    <tbody>${outRows}</tbody>
+  </table>
+  <div class="foot">
+    <div class="fc"><div class="fl">الرصيد الدفتري</div><div class="fv" style="color:#7c3aed">${fmt(net)} ر.س</div></div>
+    ${surplus>0?`<div class="fc"><div class="fl">فائض</div><div class="fv" style="color:#d97706">+${fmt(surplus)} ر.س</div></div>`:''}
+    ${deficit>0?`<div class="fc"><div class="fl">عجز</div><div class="fv" style="color:#dc2626">-${fmt(deficit)} ر.س</div></div>`:''}
+    <div class="fc"><div class="fl">الرصيد الفعلي</div><div class="fv" style="color:#059669">${fmt(actualNet)} ر.س</div></div>
+  </div>
+  </body></html>`;
+
+  try{
+    const blob=new Blob([htmlContent],{type:'text/html'});
+    const file=new File([blob],fileName,{type:'text/html'});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      await navigator.share({files:[file]});
+      return;
+    }
+  }catch(e){
+    if(e.name==='AbortError') return;
+  }
+
+  // fallback: فتح في نافذة جديدة
+  const win=window.open('','_blank','width=750,height=900');
+  if(!win){showToast('السماح بالنوافذ المنبثقة','err');return;}
+  win.document.write(htmlContent);
+  win.document.close();
+  showToast('احفظ كـ PDF وأرسله لواتساب');
+}
+
 function shareWhatsApp(){
   if(!currentDay){showToast('لا توجد بيانات لهذا اليوم','err');return;}
   const d=currentDay;
@@ -1234,54 +1358,54 @@ function shareWhatsApp(){
   const inTxs=(d.transactions||[]).filter(t=>t.type==='in');
   const outTxs=(d.transactions||[]).filter(t=>t.type==='out');
 
+  const NL='%0A';
+
   const inLines=inTxs.map(t=>{
-    let line=`   ${t.icon} ${t.label}`;
-    if(t.client||t.name) line+=` ‹${t.client||t.name}›`;
-    if(t.details) line+=` — ${t.details}`;
-    line+=`\n      ＋ *${fmt(t.amount)} ر.س*`;
-    return line;
-  }).join('\n');
+    let line='- '+t.label;
+    if(t.client||t.name) line+=' ('+( t.client||t.name)+')';
+    if(t.details) line+=' - '+t.details;
+    line+=' *+'+fmt(t.amount)+' ر.س*';
+    return encodeURIComponent(line);
+  }).join(NL);
 
   const outLines=outTxs.map(t=>{
-    let line=`   ${t.icon} ${t.label}`;
-    if(t.client||t.name) line+=` ‹${t.client||t.name}›`;
-    if(t.details) line+=` — ${t.details}`;
-    line+=`\n      ﹣ *${fmt(t.amount)} ر.س*`;
-    return line;
-  }).join('\n');
+    let line='- '+t.label;
+    if(t.client||t.name) line+=' ('+(t.client||t.name)+')';
+    if(t.details) line+=' - '+t.details;
+    line+=' *-'+fmt(t.amount)+' ر.س*';
+    return encodeURIComponent(line);
+  }).join(NL);
 
-  let text='';
-  text+=`╔══════════════════╗\n`;
-  text+=`      📊 *كشف صندوق يومي*\n`;
-  text+=`╚══════════════════╝\n\n`;
-  text+=`🏢 *${settings.companyName}*\n`;
-  text+=`📅 ${fmtDateAr(currentDate)}\n\n`;
-
-  text+=`━━━━━ 💼 ملخص اليوم ━━━━━\n`;
-  text+=`🔵 الرصيد الافتتاحي:  *${fmt(d.openingBalance)} ر.س*\n`;
-  text+=`🟢 إجمالي الدخل:      *${fmt(calcIn(d))} ر.س*\n`;
-  text+=`🔴 إجمالي الخرج:      *${fmt(calcOut(d))} ر.س*\n`;
+  let parts=[];
+  parts.push(encodeURIComponent('*كشف صندوق يومي*'));
+  parts.push(encodeURIComponent('*'+settings.companyName+'*'));
+  parts.push(encodeURIComponent(fmtDateAr(currentDate)));
+  parts.push(encodeURIComponent('━━━━━━━━━━━━━━━━━━━'));
+  parts.push(encodeURIComponent('الرصيد الافتتاحي: *'+fmt(d.openingBalance)+' ر.س*'));
+  parts.push(encodeURIComponent('اجمالي الدخل: *'+fmt(calcIn(d))+' ر.س*'));
+  parts.push(encodeURIComponent('اجمالي الخرج: *'+fmt(calcOut(d))+' ر.س*'));
 
   if(inTxs.length){
-    text+=`\n━━━━━ 🟢 الدخل (${inTxs.length}) ━━━━━\n`;
-    text+=inLines+'\n';
+    parts.push(encodeURIComponent('━━━━━━━━━━━━━━━━━━━'));
+    parts.push(encodeURIComponent('*تفاصيل الدخل ('+inTxs.length+')*'));
+    parts.push(encodeURIComponent('━━━━━━━━━━━━━━━━━━━'));
+    parts.push(inLines);
   }
 
   if(outTxs.length){
-    text+=`\n━━━━━ 🔴 الخرج (${outTxs.length}) ━━━━━\n`;
-    text+=outLines+'\n';
+    parts.push(encodeURIComponent('━━━━━━━━━━━━━━━━━━━'));
+    parts.push(encodeURIComponent('*تفاصيل الخرج ('+outTxs.length+')*'));
+    parts.push(encodeURIComponent('━━━━━━━━━━━━━━━━━━━'));
+    parts.push(outLines);
   }
 
-  text+=`\n━━━━━ 📒 الأرصدة ━━━━━\n`;
-  text+=`📒 الرصيد الدفتري:  *${fmt(net)} ر.س*\n`;
-  if(surplus>0) text+=`🟡 فائض مسجّل:      *+${fmt(surplus)} ر.س*\n`;
-  if(deficit>0) text+=`🔴 عجز مسجّل:       *−${fmt(deficit)} ر.س*\n`;
-  text+=`✅ الرصيد الفعلي:   *${fmt(actualNet)} ر.س*\n`;
+  parts.push(encodeURIComponent('━━━━━━━━━━━━━━━━━━━'));
+  parts.push(encodeURIComponent('الرصيد الدفتري: *'+fmt(net)+' ر.س*'));
+  if(surplus>0) parts.push(encodeURIComponent('فائض مسجل: *+'+fmt(surplus)+' ر.س*'));
+  if(deficit>0) parts.push(encodeURIComponent('عجز مسجل: *-'+fmt(deficit)+' ر.س*'));
+  parts.push(encodeURIComponent('الرصيد الفعلي: *'+fmt(actualNet)+' ر.س*'));
 
-  text+=`\n▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔`;
-
-  const encoded=encodeURIComponent(text);
-  // intent:// يفتح واتساب مباشرة في APK WebView — wa.me للمتصفح
+  const encoded=parts.join(NL);
   const isAndroid=/android/i.test(navigator.userAgent);
   const url=isAndroid
     ?'intent://send?text='+encoded+'#Intent;package=com.whatsapp;scheme=whatsapp;end'
