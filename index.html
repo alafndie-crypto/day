@@ -210,9 +210,9 @@ label.lbl{display:block;font-size:13px;font-weight:700;color:#374151;margin-bott
 </head>
 <body>
 
-<!-- LICENSE SCREEN -->
-<div class="ob-screen" id="licenseScreen">
-  <div class="ob-box">
+<!-- ACTIVATION SCREEN -->
+<div class="ob-screen" id="licenseScreen" style="display:none">
+  <div class="ob-box" style="max-width:380px">
     <div id="licenseContent"></div>
   </div>
 </div>
@@ -629,15 +629,11 @@ async function init(){
 
   currentDate=todayStr();
 
-  // License check FIRST
-  const licStatus = await getLicenseStatus();
-  if(!licStatus.valid){
-    showLicenseScreen(licStatus.type);
+  // Activation check FIRST
+  const activated = await isActivated();
+  if(!activated){
+    showLicenseScreen();
     return;
-  }
-  // Show trial warning if < 10 days left
-  if(licStatus.type==='trial' && licStatus.daysLeft<=10){
-    showToast('⚠️ تبقى '+licStatus.daysLeft+' يوم من الفترة التجريبية');
   }
 
   // First time: show setup
@@ -1889,146 +1885,184 @@ function viewImg(txId){
 }
 function closeImgViewer(){document.getElementById('imgViewer').style.display='none';}
 
-// ── License System ────────────────────────────────────────
-const SALT_LIC       = 'SANDOQ@Daily#2025$Salah!Secure';
-const TRIAL_DAYS_LIC = 90;
-const ALPHA32        = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// ── نظام التفعيل الجديد (كود 6 خانات مرتبط بالجهاز) ────────
+const ACT_SALT = 'SQ@2025#SALAH!KEY$SECURE';
+const ALPHA36  = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+// دالة هاش بسيطة وسريعة
 function fnv1a(str){
   let h=0x811c9dc5>>>0;
   for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,0x01000193)>>>0;}
   return h;
 }
-function toCode8(hash){
-  let r='',h=hash>>>0;
-  for(let i=0;i<8;i++){r=ALPHA32[h%32]+r;h=Math.floor(h/32);}
-  return r;
-}
-function getDeviceId(){
-  let id=localStorage.getItem('dtDeviceId');
-  if(!id){
-    const base=navigator.userAgent+screen.width+screen.height+navigator.language+(Date.now()>>>0);
-    id='DT-'+toCode8(fnv1a(base));
-    localStorage.setItem('dtDeviceId',id);
-  }
-  return id;
-}
-function getInstallDate(){
-  let d=localStorage.getItem('dtInstallDate');
-  if(!d){d=Date.now().toString();localStorage.setItem('dtInstallDate',d);}
-  return parseInt(d);
-}
-// حفظ تاريخ التثبيت في IndexedDB كطبقة حماية إضافية ضد مسح localStorage
-async function getInstallDateSafe(){
-  try{
-    const rec=await dbGet('settings','installDate');
-    if(rec&&rec.value){
-      const lsDate=parseInt(localStorage.getItem('dtInstallDate')||'0');
-      const idbDate=rec.value;
-      const earliest=lsDate>0?Math.min(lsDate,idbDate):idbDate;
-      localStorage.setItem('dtInstallDate',earliest.toString());
-      return earliest;
-    }
-    const d=getInstallDate();
-    await dbPut('settings',{id:'installDate',value:d});
-    return d;
-  }catch{return getInstallDate();}
-}
-// حفظ deviceId في IndexedDB — يُستعاد إذا مُسح localStorage
-async function getDeviceIdSafe(){
-  try{
-    let id=localStorage.getItem('dtDeviceId');
-    const rec=await dbGet('settings','deviceId');
-    if(rec&&rec.value){
-      if(!id){localStorage.setItem('dtDeviceId',rec.value);id=rec.value;}
-      return id;
-    }
-    id=getDeviceId();
-    await dbPut('settings',{id:'deviceId',value:id});
-    return id;
-  }catch{return getDeviceId();}
-}
-async function getLicenseStatus(){
-  const installDate=await getInstallDateSafe();
-  const now=Date.now();
-  const trialEnd=installDate+(TRIAL_DAYS_LIC*86400000);
-  const savedLic=localStorage.getItem('dtLicense');
-  if(savedLic){
-    try{
-      const lic=JSON.parse(savedLic);
-      if(lic.expiry>now) return{valid:true,type:'paid',daysLeft:Math.ceil((lic.expiry-now)/86400000)};
-      return{valid:false,type:'expired',daysLeft:0};
-    }catch{}
-  }
-  if(now<trialEnd) return{valid:true,type:'trial',daysLeft:Math.ceil((trialEnd-now)/86400000)};
-  return{valid:false,type:'expired',daysLeft:0};
-}
-function activateLicense(code){
-  const parts=code.toUpperCase().trim().split('-');
-  if(parts.length!==4||parts[0]!=='DT') return false;
-  if(parts[1].length!==8) return false;
-  const days=parseInt(parts[2]);
-  if(isNaN(days)||days<1) return false;
-  if(parts[3].length!==8) return false;
-  // ربط الجهاز: الكود يجب أن يتطابق مع هذا الجهاز تحديداً
-  const myId=getDeviceId(); // "DT-XXXXXXXX"
-  if('DT-'+parts[1]!==myId) return false;
-  // التحقق من الـ checksum
-  const expected=toCode8(fnv1a(parts[1]+'|'+days+'|'+SALT_LIC));
-  if(parts[3]!==expected) return false;
-  const expiry=Date.now()+(days*86400000);
-  localStorage.setItem('dtLicense',JSON.stringify({expiry,days,deviceId:parts[1]}));
-  return true;
+
+// توليد بصمة الجهاز من عدة مصادر
+function buildDeviceFingerprint(){
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d');
+  ctx.textBaseline='top';
+  ctx.font='14px Arial';
+  ctx.fillText('SandoqDevice🔑',2,2);
+  const canvasStr=canvas.toDataURL().slice(-20);
+
+  const parts=[
+    navigator.userAgent||'',
+    screen.width+'x'+screen.height,
+    screen.colorDepth||'',
+    navigator.language||'',
+    navigator.hardwareConcurrency||'',
+    new Date().getTimezoneOffset(),
+    canvasStr
+  ];
+  return parts.join('|');
 }
 
-function copyDeviceId(id){
-  // fallback يعمل في WebView وHTTP بدون HTTPS
-  if(navigator.clipboard&&window.isSecureContext){
-    navigator.clipboard.writeText(id).then(()=>showToast('✅ تم نسخ المعرّف')).catch(()=>copyFallback(id));
-  } else { copyFallback(id); }
+// الحصول على كود الجهاز (6 خانات أحرف وأرقام)
+function getDeviceCode(){
+  // أولاً: ابحث في IndexedDB
+  let saved = localStorage.getItem('_dvc');
+  if(saved) return saved;
+
+  const fingerprint = buildDeviceFingerprint();
+  const hash = fnv1a(fingerprint + ACT_SALT);
+  // تحويل الهاش إلى 6 خانات من الأحرف والأرقام
+  let code = '';
+  let h = hash >>> 0;
+  for(let i=0; i<6; i++){
+    code += ALPHA36[h % 36];
+    h = Math.floor(h / 36);
+  }
+  localStorage.setItem('_dvc', code);
+  return code;
 }
-function copyFallback(text){
+
+// حفظ واسترجاع كود الجهاز من IndexedDB (طبقة حماية)
+async function getDeviceCodeSafe(){
+  try{
+    const rec = await dbGet('settings','_dvc');
+    if(rec && rec.value){
+      localStorage.setItem('_dvc', rec.value);
+      return rec.value;
+    }
+    const code = getDeviceCode();
+    await dbPut('settings',{id:'_dvc', value:code});
+    return code;
+  }catch{ return getDeviceCode(); }
+}
+
+// توليد مفتاح التفعيل من كود الجهاز (للبائع)
+// هذه الدالة تستخدم في صفحة البائع المنفصلة
+function generateActivationKey(deviceCode){
+  deviceCode = deviceCode.toUpperCase().trim();
+  if(deviceCode.length !== 6) return null;
+  const hash = fnv1a(deviceCode + '|' + ACT_SALT);
+  let key = '';
+  let h = hash >>> 0;
+  for(let i=0; i<6; i++){
+    key += ALPHA36[h % 36];
+    h = Math.floor(h / 36);
+  }
+  return key;
+}
+
+// التحقق من صحة مفتاح التفعيل
+function verifyAndActivate(inputKey){
+  const deviceCode = getDeviceCode();
+  const expected = generateActivationKey(deviceCode);
+  if(!expected) return false;
+  if(inputKey.toUpperCase().trim() === expected){
+    // حفظ التفعيل في localStorage وIndexedDB
+    localStorage.setItem('_act', '1|' + deviceCode);
+    dbPut('settings',{id:'_act', value:'1|'+deviceCode}).catch(()=>{});
+    return true;
+  }
+  return false;
+}
+
+// التحقق إذا كان الجهاز مفعّلاً
+async function isActivated(){
+  const deviceCode = await getDeviceCodeSafe();
+  // تحقق من localStorage
+  const saved = localStorage.getItem('_act');
+  if(saved){
+    const parts = saved.split('|');
+    if(parts[0]==='1' && parts[1]===deviceCode) return true;
+  }
+  // تحقق من IndexedDB
+  try{
+    const rec = await dbGet('settings','_act');
+    if(rec && rec.value){
+      const parts = rec.value.split('|');
+      if(parts[0]==='1' && parts[1]===deviceCode){
+        localStorage.setItem('_act', rec.value);
+        return true;
+      }
+    }
+  }catch{}
+  return false;
+}
+
+function copyText(text, msg){
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(()=>showToast(msg||'✅ تم النسخ')).catch(()=>copyFallback(text,msg));
+  } else { copyFallback(text,msg); }
+}
+function copyFallback(text, msg){
   const ta=document.createElement('textarea');
   ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
   document.body.appendChild(ta); ta.focus(); ta.select();
-  try{document.execCommand('copy');showToast('✅ تم نسخ المعرّف');}
-  catch{showToast('انسخ المعرّف يدوياً','err');}
+  try{document.execCommand('copy');showToast(msg||'✅ تم النسخ');}
+  catch{showToast('انسخ يدوياً','err');}
   document.body.removeChild(ta);
 }
 
-function showLicenseScreen(type){
-  const deviceId=getDeviceId();
-  const install=getInstallDate();
-  const trialEnd=install+(TRIAL_DAYS_LIC*86400000);
-  const trialEndDate=new Date(trialEnd).toLocaleDateString('ar-SA');
-  let html='';
-  if(type==='expired'){
-    html=`<div class="lic-screen-icon">🔒</div>
-      <div class="lic-screen-title">انتهى الاشتراك</div>
-      <div class="lic-screen-sub">انتهت صلاحية الاستخدام<br>أرسل معرّف جهازك للبائع لتجديد الاشتراك</div>`;
-  } else {
-    html=`<div class="lic-screen-icon">⏰</div>
-      <div class="lic-screen-title">انتهت الفترة التجريبية</div>
-      <div class="lic-screen-sub">استمتعت بـ ${TRIAL_DAYS_LIC} يوم مجاناً (حتى ${trialEndDate})<br>يرجى تفعيل الاشتراك للمتابعة</div>`;
-  }
-  html+=`<div class="lic-device">📱 معرّف جهازك:<br><b style="letter-spacing:2px">${deviceId}</b></div>
-    <button style="width:100%;background:#dbeafe;color:#1d4ed8;border:none;border-radius:9px;padding:12px;font-family:inherit;font-weight:800;cursor:pointer;margin-bottom:12px;font-size:14px" onclick="copyDeviceId('${deviceId}')">📋 نسخ المعرّف</button>
-    <input class="lic-inp" type="text" id="licCode" placeholder="DT-XXXXXXXX-365-XXXXXXXX" style="letter-spacing:1px;text-align:center">
-    <button class="ob-btn" onclick="submitLicCode()">✅ تفعيل الاشتراك</button>
-    <div style="font-size:10px;color:#94a3b8;margin-top:10px;text-align:center">الدعم: المهندس صلاح غالب | 0556321436</div>`;
+function showLicenseScreen(){
+  const deviceCode = getDeviceCode();
+  const html=`
+    <div style="font-size:48px;margin-bottom:10px;text-align:center">🔐</div>
+    <div style="font-size:1.2rem;font-weight:900;color:#1a3c6e;margin-bottom:6px;text-align:center">تفعيل البرنامج</div>
+    <div style="font-size:12px;color:#64748b;margin-bottom:18px;text-align:center;line-height:1.7">
+      أرسل كود جهازك للبائع<br>وسيرسل لك كود التفعيل
+    </div>
+
+    <div style="background:#eff6ff;border:2px solid #bfdbfe;border-radius:12px;padding:14px;margin-bottom:14px;text-align:center">
+      <div style="font-size:11px;color:#1d4ed8;font-weight:700;margin-bottom:6px">📱 كود جهازك</div>
+      <div style="font-size:2rem;font-weight:900;color:#1a3c6e;letter-spacing:6px">${deviceCode}</div>
+    </div>
+
+    <button onclick="copyText('${deviceCode}','✅ تم نسخ كود الجهاز')"
+      style="width:100%;background:#dbeafe;color:#1d4ed8;border:none;border-radius:9px;padding:11px;font-family:inherit;font-weight:800;cursor:pointer;margin-bottom:16px;font-size:13px">
+      📋 نسخ كود الجهاز
+    </button>
+
+    <div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px;text-align:right">أدخل كود التفعيل (6 خانات)</div>
+    <input id="actKeyInput" type="text" maxlength="6"
+      style="width:100%;border:2px solid #e2e8f0;border-radius:10px;padding:13px;font-size:1.6rem;font-family:inherit;text-align:center;letter-spacing:8px;outline:none;color:#1a3c6e;font-weight:900;text-transform:uppercase;margin-bottom:12px"
+      placeholder="- - - - - -"
+      oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"
+      onkeydown="if(event.key==='Enter')submitActKey()">
+    <button class="ob-btn" onclick="submitActKey()">✅ تفعيل البرنامج</button>
+    <div style="font-size:10px;color:#94a3b8;margin-top:12px;text-align:center">الدعم الفني: المهندس صلاح غالب | 0556321436</div>
+  `;
   document.getElementById('licenseContent').innerHTML=html;
   document.getElementById('licenseScreen').style.display='flex';
+  setTimeout(()=>document.getElementById('actKeyInput')?.focus(),300);
 }
 
-async function submitLicCode(){
-  const code=document.getElementById('licCode')?.value?.trim();
-  if(!code){showToast('يرجى إدخال كود التفعيل','err');return;}
-  if(activateLicense(code)){
+async function submitActKey(){
+  const key = document.getElementById('actKeyInput')?.value?.trim().toUpperCase();
+  if(!key || key.length!==6){
+    showToast('يرجى إدخال كود التفعيل كاملاً (6 خانات)','err');
+    return;
+  }
+  if(verifyAndActivate(key)){
     document.getElementById('licenseScreen').style.display='none';
-    showToast('🎉 تم التفعيل بنجاح!');
-    setTimeout(()=>init(),500);
+    showToast('🎉 تم التفعيل بنجاح! مرحباً بك');
+    setTimeout(()=>init(),600);
   } else {
-    showToast('❌ الكود غير صحيح أو منتهي الصلاحية','err');
+    const inp=document.getElementById('actKeyInput');
+    if(inp){inp.style.borderColor='#dc2626';setTimeout(()=>inp.style.borderColor='#e2e8f0',2000);}
+    showToast('❌ كود التفعيل غير صحيح','err');
   }
 }
 
